@@ -1,0 +1,11 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+<<<<<<< HEAD
+yolov8n.pt
+.DS_Store
+=======
+>>>>>>> 54053bdfdcfaeb2c770391293c05856b8749b5bb
