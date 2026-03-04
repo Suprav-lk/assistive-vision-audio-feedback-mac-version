@@ -1,3 +1,4 @@
+import threading
 from ultralytics import YOLO
 import cv2
 import os
@@ -17,8 +18,8 @@ if not cap.isOpened():
     exit()
 
 # Reduce resolution for better performance
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 480)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
 
 print("Real-time object detection started. Press 'q' to quit.")
 
@@ -34,14 +35,14 @@ while True:
     frame_count += 1
 
     # Skip every other frame for smoother video
-    if frame_count % 2 != 0:
+    if frame_count % 3 != 0:
         cv2.imshow("Assistive Vision - Object Detection", frame)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
         continue
 
     # Run detection
-    results = model(frame, conf=0.4)
+    results = model(frame, conf=0.3, stream=True)
 
     detected_objects = []
 
@@ -59,9 +60,17 @@ while True:
         unique_objects = list(set(detected_objects))
         announcement = ", ".join(unique_objects)
 
-        os.system(f"say {announcement} detected")
-        print("Speaking:", announcement)
+        #os.system(f"say {announcement} detected")
+        
 
+        def speak(text):
+            os.system(f"say {text}")
+
+        threading.Thread(target=speak, args=(announcement,)).start()
+        print("Speaking:", announcement)
+        
+        
+        
         last_spoken_time = current_time
 
     cv2.imshow("Assistive Vision - Object Detection", annotated_frame)
