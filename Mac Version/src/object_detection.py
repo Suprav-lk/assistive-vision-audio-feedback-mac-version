@@ -21,18 +21,18 @@ cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
 
 print("Assistive Vision started. Press 'q' to quit.")
 
-# PRIORITY OBJECTS ONLY
 important_objects = [
     "person",
     "car",
     "bus",
     "truck",
     "bicycle",
-    "motorcycle"
+    "motorcycle",
+    "bottle"
 ]
 
 last_spoken_time = 0
-speech_delay = 5
+speech_delay = 8
 frame_count = 0
 
 def speak(text):
@@ -45,7 +45,6 @@ while True:
 
     frame_count += 1
 
-    # Skip frames for smoother video
     if frame_count % 3 != 0:
         cv2.imshow("Assistive Vision - Object Detection", frame)
         if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -57,6 +56,7 @@ while True:
     detected_announcements = []
 
     height, width, _ = frame.shape
+    frame_area = width * height
 
     for r in results:
         annotated_frame = r.plot()
@@ -65,14 +65,14 @@ while True:
             class_id = int(box.cls[0])
             class_name = model.names[class_id]
 
-            # Only care about important objects
             if class_name not in important_objects:
                 continue
 
             x1, y1, x2, y2 = box.xyxy[0]
+
+            # -------- DIRECTION --------
             center_x = (x1 + x2) / 2
 
-            # Divide screen into 3 vertical zones
             if center_x < width / 3:
                 direction = "on your left"
             elif center_x < (2 * width / 3):
@@ -80,7 +80,23 @@ while True:
             else:
                 direction = "on your right"
 
-            detected_announcements.append(f"{class_name} {direction}")
+            # -------- DISTANCE --------
+            box_width = x2 - x1
+            box_height = y2 - y1
+            box_area = box_width * box_height
+
+            relative_size = box_area / frame_area
+
+            if relative_size > 0.15:
+                distance = "very close"
+            elif relative_size > 0.05:
+                distance = "nearby"
+            else:
+                distance = "far"
+
+            detected_announcements.append(
+                f"{class_name} {distance} {direction}"
+            )
 
     current_time = time.time()
 
