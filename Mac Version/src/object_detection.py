@@ -70,7 +70,7 @@ important_objects = [
 frame_count = 0
 
 # Stores the last spoken environmental state
-last_announcements = set()
+last_announcements = ""
 
 # Tracks if emergency warning is currently active
 emergency_active = False
@@ -80,6 +80,13 @@ speech_cooldown = 2.5   # seconds
 
 # Timestamp of last speech
 last_speech_time = 0
+
+# Emergency warning cooldown
+warning_cooldown = 4
+
+# Timestamp of last warning
+last_warning_time = 0
+
 
 # ==================================================
 # 5. SPEECH FUNCTION (Non-blocking)
@@ -96,6 +103,9 @@ def speak(text):
 
 while True:
     ret, frame = cap.read()
+    # Tracks if an emergency object exists in this frame
+    emergency_detected_this_frame = False
+    
     if not ret:
         break
 
@@ -116,9 +126,12 @@ while True:
     # RUN OBJECT DETECTION
     # ----------------------------------------------
     results = model(frame, conf=0.3, stream=True)
-
-    # Will store final messages to speak
-    detected_announcements = []
+    
+    """ Instead of announcing all objects, we track only
+        the closest obstacle in the frame for navigation safety"""
+    # Track the closest obstacle in the frame
+    closest_object = None
+    closest_size = 0
 
     # Get frame size (used for distance estimation)
     height, width, _ = frame.shape
@@ -209,8 +222,22 @@ while True:
             else:
                 distance = "far"
 
-
             # ------------------------------------------
+            # FIND CLOSEST OBJECT
+            # ------------------------------------------
+            # Larger bounding box area means object is closer
+
+            if relative_size > closest_size:
+
+                closest_size = relative_size
+
+                closest_object = {
+                    "name": class_name,
+                    "distance": distance,
+                    "direction": direction
+                }
+
+           # ------------------------------------------
             # EMERGENCY WARNING (Safety Override)
             # Triggered when object is very close
             # and directly in front of user
@@ -218,10 +245,13 @@ while True:
 
             if distance == "very close" and direction == "in front of you":
 
-                # Only trigger once per emergency event
+                # Mark that an emergency exists in this frame
+                emergency_detected_this_frame = True
+
+                # Trigger warning only once
                 if not emergency_active:
 
-                    warning_message = f"Warning! {class_name} very close in front of you"
+                    warning_message = f"Warning. {class_name} very close in front of you"
 
                     threading.Thread(
                         target=speak,
@@ -231,16 +261,6 @@ while True:
                     print("EMERGENCY:", warning_message)
 
                     emergency_active = True
-
-            else:
-                # Reset emergency state when condition no longer true
-                emergency_active = False
-
-
-            # Add normal announcement to environment list
-            detected_announcements.append(
-                f"{class_name} {distance} {direction}"
-            )
             
         # --------------------------------------------------
         # UPDATE TRACKER WITH CURRENT FRAME DETECTIONS
@@ -300,41 +320,41 @@ while True:
             else:
                 distance = "far"
 
-            detected_announcements.append(
-                f"person {distance} {direction}"
-            )
-
 
     # ==================================================
-    # EVENT-BASED SPEECH SYSTEM
+    # SPEAK ONLY THE CLOSEST OBSTACLE
     # ==================================================
-    # Speaks only when environment changes
-
-    current_set = set(detected_announcements)
 
     current_time = time.time()
 
-    # Speak only if environment changed AND cooldown passed
-    if (
-        current_set != last_announcements
-        and current_set
-        and (current_time - last_speech_time > speech_cooldown)
-    ):
+    if closest_object:
 
-        announcement = ", ".join(current_set)
+        announcement = (
+            f"{closest_object['name']} "
+            f"{closest_object['distance']} "
+            f"{closest_object['direction']}"
+        )
 
-        threading.Thread(
-            target=speak,
-            args=(announcement,)
-        ).start()
+        # Speak only if announcement changed and cooldown passed
+        if (
+            announcement != last_announcements
+            and (current_time - last_speech_time > speech_cooldown)
+        ):
 
-        print("Speaking:", announcement)
+            threading.Thread(
+                target=speak,
+                args=(announcement,)
+            ).start()
 
-        # Update memory of last environment state
-        last_announcements = current_set
-        last_speech_time = current_time
- 
+            print("Speaking:", announcement)
 
+            last_announcements = announcement
+            last_speech_time = current_time
+    
+    # Reset emergency state if nothing dangerous was detected
+    if not emergency_detected_this_frame:
+        emergency_active = False
+        
     # ----------------------------------------------
     # DISPLAY VIDEO OUTPUT
     # ----------------------------------------------
