@@ -54,12 +54,13 @@ print("Assistive Vision started. Press 'q' to quit.")
 
 important_objects = [
     "person",
-    "car",
-    "bus",
-    "truck",
-    "bicycle",
-    "motorcycle",
-    "bottle"
+    "table",
+    "chair",
+    "sofa",
+    "bed",
+    "door",
+    "staircase",
+    "dining table"
 ]
 
 
@@ -131,7 +132,7 @@ while True:
         the closest obstacle in the frame for navigation safety"""
     # Track the closest obstacle in the frame
     closest_object = None
-    closest_size = 0
+    largest_relative_size = 0
 
     # Get frame size (used for distance estimation)
     height, width, _ = frame.shape
@@ -143,7 +144,7 @@ while True:
     # ==================================================
 
     for r in results:
-
+        annotated_frame = frame.copy()
         # Draw bounding boxes on screen
         annotated_frame = r.plot()
         
@@ -225,11 +226,13 @@ while True:
             # ------------------------------------------
             # FIND CLOSEST OBJECT
             # ------------------------------------------
-            # Larger bounding box area means object is closer
+            # Larger bounding boxes indicate objects closer to the camera.
+            # We keep only the largest object so that the system announces
+            # the closest obstacle instead of overwhelming the user.
+            
+            if relative_size > largest_relative_size:
 
-            if relative_size > closest_size:
-
-                closest_size = relative_size
+                largest_relative_size = relative_size
 
                 closest_object = {
                     "name": class_name,
@@ -271,56 +274,7 @@ while True:
         tracks = tracker.update_tracks(tracker_detections, frame=frame)
         print("Active tracks:", len(tracks)) #temporary debug statement
         
-        # --------------------------------------------------
-        # FIND THE CLOSEST PERSON
-        # --------------------------------------------------
-        """We prioritize the closest person because they
-            represent the most immediate collision risk."""
-            
-        closest_person = None
-        largest_height = 0
-
-        for track in tracks:
-
-            if not track.is_confirmed():
-                continue
-
-            l, t, r, b = track.to_ltrb()
-
-            person_height = b - t
-
-            if person_height > largest_height:
-                largest_height = person_height
-                closest_person = (l, t, r, b)
-                
-        # --------------------------------------------------
-        # DETERMINE POSITION AND DISTANCE OF CLOSEST PERSON
-        # --------------------------------------------------
-            
-        if closest_person is not None:
-
-            l, t, r, b = closest_person
-
-            center_x = (l + r) / 2
-
-            if center_x < width / 3:
-                direction = "on your left"
-            elif center_x < (2 * width / 3):
-                direction = "in front of you"
-            else:
-                direction = "on your right"
-
-            person_height = b - t
-            relative_size = (person_height * (r - l)) / frame_area
-
-            if relative_size > 0.15:
-                distance = "very close"
-            elif relative_size > 0.05:
-                distance = "nearby"
-            else:
-                distance = "far"
-
-
+        
     # ==================================================
     # SPEAK ONLY THE CLOSEST OBSTACLE
     # ==================================================
