@@ -82,6 +82,16 @@ speech_cooldown = 2.5   # seconds
 # Timestamp of last speech
 last_speech_time = 0
 
+
+# ----------------------------------------------
+# Stability filter for closest obstacle
+# Object must remain stable before announcement
+# ----------------------------------------------
+
+stable_object = None          # currently observed closest obstacle
+stable_start_time = 0         # when it first appeared
+stability_threshold = 2.0     # seconds required before speaking
+
 # Emergency warning cooldown
 warning_cooldown = 4
 
@@ -289,21 +299,30 @@ while True:
             f"{closest_object['direction']}"
         )
 
-        # Speak only if announcement changed and cooldown passed
-        if (
-            announcement != last_announcements
-            and (current_time - last_speech_time > speech_cooldown)
-        ):
+        if announcement != stable_object:
+            # New object detected → start stability timer
+            stable_object = announcement
+            stable_start_time = current_time
 
-            threading.Thread(
-                target=speak,
-                args=(announcement,)
-            ).start()
+        else:
+            # Same object still detected
+            stable_duration = current_time - stable_start_time
 
-            print("Speaking:", announcement)
+            if (
+                stable_duration > stability_threshold
+                and announcement != last_announcements
+                and (current_time - last_speech_time > speech_cooldown)
+            ):
 
-            last_announcements = announcement
-            last_speech_time = current_time
+                threading.Thread(
+                    target=speak,
+                    args=(announcement,)
+                ).start()
+
+                print("Speaking:", announcement)
+
+                last_announcements = announcement
+                last_speech_time = current_time
     
     # Reset emergency state if nothing dangerous was detected
     if not emergency_detected_this_frame:
