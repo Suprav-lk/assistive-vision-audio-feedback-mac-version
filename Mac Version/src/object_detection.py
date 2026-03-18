@@ -60,7 +60,9 @@ important_objects = [
     "bed",
     "door",
     "staircase",
-    "dining table"
+    "dining table",
+    "wall",
+    "window",
 ]
 
 
@@ -99,13 +101,77 @@ warning_cooldown = 4
 last_warning_time = 0
 
 
+speech_lock = threading.Lock()
+
+
+# ==================================================
+# APPROACHING OBJECT TRACKER (NEW FEATURE)
+# ==================================================
+
+approach_tracker = {}
+
+APPROACH_THRESHOLD = 1.02    # 2% increase in size
+APPROACH_COUNT_REQUIRED = 3 # frames needed to confirm
+APPROACH_COOLDOWN = 5        # seconds between alerts
+
+
 # ==================================================
 # 5. SPEECH FUNCTION (Non-blocking)
 # ==================================================
 # Runs speech in a separate thread so video doesn't freeze
 
 def speak(text):
-    os.system(f"say {text}")
+    """
+    Ensures only ONE speech runs at a time.
+    Prevents backlog and delayed audio.
+    """
+    if speech_lock.locked():
+        return  # Skip if already speaking (drop old messages)
+
+    def run():
+        with speech_lock:
+            os.system(f"say {text}")
+
+    threading.Thread(target=run).start()
+
+
+def check_approaching(object_id, area):
+    """
+    Detects if an object is approaching based on bounding box growth.
+    """
+
+    current_time = time.time()
+
+    if object_id not in approach_tracker:
+        approach_tracker[object_id] = {
+            "areas": [],
+            "increase_count": 0,
+            "last_alert": 0
+        }
+
+    data = approach_tracker[object_id]
+
+    # Store recent area values (last 5 frames)
+    data["areas"].append(area)
+    if len(data["areas"]) > 5:
+        data["areas"].pop(0)
+
+    # Check if size is increasing
+    if len(data["areas"]) >= 2:
+        if data["areas"][-1] > data["areas"][-2] * APPROACH_THRESHOLD:
+            data["increase_count"] += 1
+            print(f"{object_id} increasing | count: {data['increase_count']}")
+        else:
+            data["increase_count"] = 0
+
+    # Confirm approaching
+    if data["increase_count"] >= APPROACH_COUNT_REQUIRED:
+        if current_time - data["last_alert"] > APPROACH_COOLDOWN:
+            data["last_alert"] = current_time
+            data["increase_count"] = 0
+            return True
+
+    return False
 
 
 # ==================================================
@@ -126,7 +192,7 @@ while True:
     # PERFORMANCE OPTIMIZATION
     # Skip frames to reduce processing load
     # ----------------------------------------------
-    if frame_count % 3 != 0:
+    if frame_count % 2 != 0:
         cv2.imshow("Assistive Vision - Object Detection", frame)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
@@ -152,7 +218,7 @@ while True:
     # ==================================================
     # PROCESS EACH DETECTED OBJECT
     # ==================================================
-
+    annotated_frame = frame.copy()
     for r in results:
         annotated_frame = frame.copy()
         # Draw bounding boxes on screen
@@ -222,11 +288,41 @@ while True:
             box_width = x2 - x1
             box_height = y2 - y1
             box_area = box_width * box_height
+            
+            # DEBUG: Print object size
+            print(f"{class_name} area: {box_area}") #-------------------------------------------jdflaksjflakjfsals-------------
+            
+            # ------------------------------------------
+            # APPROACHING OBJECT DETECTION 
+            # ------------------------------------------
+
+            # Create simple object ID (based on position + class)
+            object_id = f"{class_name}_{int(x1/100)}_{int(y1/100)}"
+
+            # check if object is approaching and cooldown has passed
+            is_approaching = check_approaching(object_id, box_area)
+
+            if is_approaching and (time.time() - last_speech_time > speech_cooldown):
+
+                approaching_message = f"{class_name} approaching {direction}"
+
+                speak(approaching_message)
+
+                print("APPROACHING:", approaching_message)
+
+                last_speech_time = time.time()
+
+                # Mark emergency as already handled to prevent override
+                emergency_active = True
+
+                continue
+                                
+            # ------------------------------------------  
 
             # Compare object size to entire frame
             relative_size = box_area / frame_area
 
-            if relative_size > 0.30:
+            if relative_size > 0.45:
                 distance = "very close"
             elif relative_size > 0.05:
                 distance = "nearby"
@@ -250,7 +346,8 @@ while True:
                     "direction": direction
                 }
 
-           # ------------------------------------------
+                
+            # ------------------------------------------
             # EMERGENCY WARNING (Safety Override)
             # Triggered when object is very close
             # and directly in front of user
@@ -266,10 +363,7 @@ while True:
 
                     warning_message = f"Warning. {class_name} very close in front of you"
 
-                    threading.Thread(
-                        target=speak,
-                        args=(warning_message,)
-                    ).start()
+                    speak(warning_message)
 
                     print("EMERGENCY:", warning_message)
 
@@ -289,6 +383,9 @@ while True:
     # SPEAK ONLY THE CLOSEST OBSTACLE
     # ==================================================
 
+    if closest_object is None:
+        stable_object = None
+    
     current_time = time.time()
 
     if closest_object:
@@ -314,10 +411,7 @@ while True:
                 and (current_time - last_speech_time > speech_cooldown)
             ):
 
-                threading.Thread(
-                    target=speak,
-                    args=(announcement,)
-                ).start()
+                speak(announcement)
 
                 print("Speaking:", announcement)
 
@@ -327,6 +421,10 @@ while True:
     # Reset emergency state if nothing dangerous was detected
     if not emergency_detected_this_frame:
         emergency_active = False
+        
+    # Reset last announcement if nothing detected
+    if not closest_object:
+        last_announcements = ""
         
     # ----------------------------------------------
     # DISPLAY VIDEO OUTPUT
