@@ -1,0 +1,15 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+yolov8n.pt
+.DS_Store
+
+Door-1/
+staircase-1/
+custom_dataset/
+
+vosk-model-small-en-us/
+*.pt
