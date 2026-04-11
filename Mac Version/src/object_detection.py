@@ -8,10 +8,16 @@ import cv2
 from ultralytics import YOLO
 from deep_sort_realtime.deepsort_tracker import DeepSort
 
-# === NEW: Vosk offline speech recognition ===
+# === Vosk offline speech recognition ===
 import vosk
 import pyaudio
-# === END NEW ===
+# === END ===
+
+# ==Emergency alerting (Twilio)===
+import json
+import requests
+from twilio.rest import Client
+# === END ===
 
 
 # ==================================================
@@ -33,6 +39,7 @@ tracker = DeepSort(
 )
 
 
+
 # ==================================================
 # 3. PRIORITY OBJECTS
 # ==================================================
@@ -41,7 +48,6 @@ important_objects = [
     "person", "table", "chair", "sofa", "bed",
     "door", "staircase", "dining table", "wall", "window",
 ]
-
 
 # ==================================================
 # 4. SYSTEM STATE VARIABLES
@@ -70,6 +76,7 @@ system_running.set()                 # Start with system ON by default
 # === END NEW ===
 
 
+
 # ==================================================
 # 5. SPEECH FUNCTION (Non-blocking)
 # ==================================================
@@ -82,6 +89,158 @@ def speak(text):
             os.system(f"say {text}")
     threading.Thread(target=run).start()
 
+
+# ==================================================
+# === EMERGENCY CALL SYSTEM ===
+# ==================================================
+
+def load_config(config_path="config.json"):
+    """Loads Twilio credentials from config.json."""
+    try:
+        with open(config_path, "r") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print("[Emergency] ERROR: config.json not found.")
+        return None
+    except json.JSONDecodeError:
+        print("[Emergency] ERROR: config.json is invalid.")
+        return None
+
+
+def load_contacts(contacts_path="contacts.json"):
+    """Loads emergency contacts from contacts.json."""
+    try:
+        with open(contacts_path, "r") as f:
+            data = json.load(f)
+            return data.get("contacts", [])
+    except FileNotFoundError:
+        print("[Emergency] ERROR: contacts.json not found.")
+        return []
+    except json.JSONDecodeError:
+        print("[Emergency] ERROR: contacts.json is invalid.")
+        return []
+
+
+def get_location():
+    """
+    Gets approximate location via IP address.
+    Returns a string like 'Kathmandu, Nepal (27.7172, 85.3240)'
+    Falls back to 'Location unavailable' if no internet.
+    """
+    try:
+        response = requests.get("https://ipapi.co/json/", timeout=5)
+        data = response.json()
+        city = data.get("city", "Unknown city")
+        country = data.get("country_name", "Unknown country")
+        lat = data.get("latitude", "?")
+        lon = data.get("longitude", "?")
+        return f"{city}, {country} (Lat: {lat}, Lon: {lon})"
+    except Exception as e:
+        print(f"[Emergency] Could not get location: {e}")
+        return "Location unavailable"
+
+
+def find_contact(name, contacts):
+    """
+    Finds a contact by name (case-insensitive).
+    Returns the contact dict or None if not found.
+    """
+    name = name.lower().strip()
+    for contact in contacts:
+        if contact["name"].lower() == name:
+            return contact
+    return None
+
+
+def make_emergency_call(contact, config, location):
+    """
+    Makes a phone call and sends an SMS to the contact via Twilio.
+    """
+    try:
+        client = Client(
+            config["twilio_account_sid"],
+            config["twilio_auth_token"]
+        )
+
+        from_number = config["twilio_phone_number"]
+        to_number = contact["phone"]
+        contact_name = contact["name"].capitalize()
+
+        # --- Send SMS with location ---
+        sms_message = (
+            f"EMERGENCY! The visually impaired user needs help. "
+            f"Location: {location}"
+        )
+
+        client.messages.create(
+            body=sms_message,
+            from_=from_number,
+            to=to_number
+        )
+
+        print(f"[Emergency] SMS sent to {contact_name} at {to_number}")
+
+        # --- Make phone call ---
+        # Twilio reads this message aloud when the contact picks up
+        call_message = (
+            f"<Response><Say>Emergency. The visually impaired user needs help. "
+            f"Please respond immediately. This call was made automatically "
+            f"by their assistive vision system.</Say></Response>"
+        )
+
+        call = client.calls.create(
+            twiml=call_message,
+            from_=from_number,
+            to=to_number
+        )
+
+        print(f"[Emergency] Call initiated to {contact_name}. Call SID: {call.sid}")
+        return True
+
+    except Exception as e:
+        print(f"[Emergency] ERROR making call/SMS: {e}")
+        return False
+
+
+def handle_emergency_call(name):
+    """
+    Main handler triggered by voice command.
+    Loads config, finds contact, gets location, makes call + SMS.
+    Runs in a separate thread so it doesn't block video loop.
+    """
+    def run():
+        print(f"[Emergency] Handling emergency call for: {name}")
+        speak(f"Calling {name}. Please wait.")
+
+        config = load_config()
+        if not config:
+            speak("Emergency call failed. Configuration not found.")
+            return
+
+        contacts = load_contacts()
+        if not contacts:
+            speak("Emergency call failed. No contacts found.")
+            return
+
+        contact = find_contact(name, contacts)
+        if not contact:
+            speak(f"Contact {name} not found.")
+            print(f"[Emergency] Contact '{name}' not in contacts.json")
+            return
+
+        location = get_location()
+        print(f"[Emergency] Location: {location}")
+
+        success = make_emergency_call(contact, config, location)
+
+        if success:
+            speak(f"Emergency call and message sent to {name}.")
+        else:
+            speak(f"Emergency call to {name} failed. Please try again.")
+
+    threading.Thread(target=run, daemon=True).start()
+
+# === END EMERGENCY CALL SYSTEM ===
 
 # ==================================================
 # APPROACHING OBJECT TRACKER
@@ -200,13 +359,30 @@ def voice_command_listener(vosk_model, system_running_event):
                     speak("System stopped")
                 else:
                     print("[Voice] System already stopped.")
+                    
+                    
+            # === Emergency call command ===
+            elif "emergency call" in text:
+                # Extract name after "emergency call"
+                # e.g. "emergency call mom" → name = "mom"
+                parts = text.split("emergency call", 1)
+                if len(parts) > 1:
+                    contact_name = parts[1].strip()
+                    if contact_name:
+                        print(f"[Voice] Command: EMERGENCY CALL → {contact_name}")
+                        handle_emergency_call(contact_name)
+                    else:
+                        speak("Please say a name after emergency call.")
+                else:
+                    speak("Please say a name after emergency call.")
+            # === END EMERGENCY CALL SYSTEM ===
 
     # Cleanup (reached only if loop is broken externally)
     stream.stop_stream()
     stream.close()
     audio.terminate()
 
-# === END NEW ===
+
 
 
 # ==================================================
