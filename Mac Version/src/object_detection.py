@@ -21,11 +21,14 @@ from twilio.rest import Client
 
 
 # ==================================================
-# 1. LOAD YOLO MODEL
+# 1. LOAD YOLO MODEL and Custome Model
 # ==================================================
 
-model = YOLO("yolov8n.pt")
-model.to("mps")
+coco_model = YOLO("yolov8n.pt")
+coco_model.to("mps")
+
+custom_model = YOLO("/Users/karmacharya/Desktop/AssistiveCVwithAF/models/best.pt")
+custom_model.to("mps")
 
 
 # ==================================================
@@ -66,14 +69,14 @@ last_warning_time = 0
 speech_lock = threading.Lock()
 
 approach_tracker = {}
-APPROACH_THRESHOLD = 1.02
-APPROACH_COUNT_REQUIRED = 3
-APPROACH_COOLDOWN = 5
+APPROACH_THRESHOLD = 1.08    # 8% increase (less sensitive)
+APPROACH_COUNT_REQUIRED = 5  # more frames needed to confirm
+APPROACH_COOLDOWN = 8        # longer cooldown between alerts
 
-# === NEW: System running flag — controlled by voice commands ===
+# === System running flag — controlled by voice commands ===
 system_running = threading.Event()   # Acts as an ON/OFF switch
-system_running.set()                 # Start with system ON by default
-# === END NEW ===
+#system_running.set()                 # Start with system ON by default
+# === END  ===
 
 
 
@@ -270,7 +273,7 @@ def check_approaching(object_id, area):
 
 
 # ==================================================
-# === NEW: VOICE COMMAND LISTENER (runs in background) ===
+# === VOICE COMMAND LISTENER (runs in background) ===
 # ==================================================
 
 def load_vosk_model(model_path="vosk-model-small-en-us"):
@@ -344,7 +347,7 @@ def voice_command_listener(vosk_model, system_running_event):
             print(f"[Voice] Heard: '{text}'")
 
             # --- Command matching ---
-            if "start system" in text:
+            if "start system" in text or "stuart system" in text or "star system" in text or "state system" in text:
                 if not system_running_event.is_set():
                     print("[Voice] Command: START SYSTEM")
                     system_running_event.set()
@@ -386,7 +389,7 @@ def voice_command_listener(vosk_model, system_running_event):
 
 
 # ==================================================
-# === NEW: CAMERA INITIALIZER / RELEASER HELPERS ===
+# === CAMERA INITIALIZER / RELEASER HELPERS ===
 # ==================================================
 
 def open_camera():
@@ -439,13 +442,21 @@ def main():
     speak("Assistive Vision ready. Say start system to begin.")
 
     cap = None   # Camera starts as None; opened when system turns ON
+    
+    
+    
+    # === FPS COUNTER ===
+    fps_start_time = time.time()
+    fps_counter = 0# === FPS COUNTER ===
+    fps_start_time = time.time()
+    fps_counter = 0
 
     # ==================================================
     # MAIN LOOP
     # ==================================================
     while True:
 
-        # === NEW: Handle system ON/OFF state ===
+        # === Handle system ON/OFF state ===
         if not system_running.is_set():
             # System is OFF — release camera if it's open, wait
             release_camera(cap)
@@ -465,7 +476,7 @@ def main():
             if cap is None:
                 time.sleep(1)
                 continue
-        # === END NEW ===
+        # === END ===
 
         ret, frame = cap.read()
         emergency_detected_this_frame = False
@@ -487,7 +498,8 @@ def main():
         # ----------------------------------------------
         # RUN OBJECT DETECTION
         # ----------------------------------------------
-        results = model(frame, conf=0.3, stream=True)
+        results = coco_model(frame, conf=0.3, stream=True)
+        custom_results = custom_model(frame, conf=0.3, stream=True)
 
         closest_object = None
         largest_relative_size = 0
@@ -503,7 +515,7 @@ def main():
 
             for box in r.boxes:
                 class_id = int(box.cls[0])
-                class_name = model.names[class_id]
+                class_name = coco_model.names[class_id]
 
                 if class_name == "person":
                     x1, y1, x2, y2 = box.xyxy[0]
@@ -531,9 +543,12 @@ def main():
                 box_area = box_width * box_height
 
                 print(f"{class_name} area: {box_area}")
-
+                
+                approaching_objects = ["Person"]
                 object_id = f"{class_name}_{int(x1/100)}_{int(y1/100)}"
-                is_approaching = check_approaching(object_id, box_area)
+                is_approaching = False
+                if class_name in approaching_objects:
+                    is_approaching = check_approaching(object_id, box_area)
 
                 if is_approaching and (time.time() - last_speech_time > speech_cooldown):
                     approaching_message = f"{class_name} approaching {direction}"
@@ -570,6 +585,52 @@ def main():
 
             tracks = tracker.update_tracks(tracker_detections, frame=frame)
             print("Active tracks:", len(tracks))
+            
+            
+        # ==================================================
+        # RUN CUSTOM MODEL FOR DOORS AND STAIRCASES
+        # ==================================================
+        
+        for r in custom_results:
+            annotated_frame = r.plot(img=annotated_frame)
+            for box in r.boxes:
+                class_id = int(box.cls[0])
+                class_name = custom_model.names[class_id]
+                # reuse existing logic
+                x1, y1, x2, y2 = box.xyxy[0]
+                center_x = (x1 + x2) / 2
+                if center_x < width / 3:
+                    direction = "on your left"
+                elif center_x < (2 * width / 3):
+                    direction = "in front of you"
+                else:
+                    direction = "on your right"
+                box_area = (x2 - x1) * (y2 - y1)
+                relative_size = box_area / frame_area
+                if relative_size > 0.45:
+                    distance = "very close"
+                elif relative_size > 0.05:
+                    distance = "nearby"
+                else:
+                    distance = "far"
+                if relative_size > largest_relative_size:
+                    largest_relative_size = relative_size
+                    closest_object = {
+                        "name": class_name,
+                        "distance": distance,
+                        "direction": direction
+                    }
+                if distance == "very close" and direction == "in front of you":
+                    emergency_detected_this_frame = True
+                    if not emergency_active:
+                        speak(f"Warning. {class_name} very close in front of you")
+                        emergency_active = True
+
+         # =================================================
+        # END RUN CUSTOM MODEL FOR DOORS AND STAIRCASES
+        # ==================================================
+        
+        
 
         # ==================================================
         # SPEAK ONLY THE CLOSEST OBSTACLE
@@ -608,6 +669,14 @@ def main():
             last_announcements = ""
 
         cv2.imshow("Assistive Vision - Object Detection", annotated_frame)
+        
+        
+        fps_counter += 1
+        if time.time() - fps_start_time >= 1.0:
+            print(f"[Performance] FPS: {fps_counter} | Latency: {1000/fps_counter:.1f}ms per frame")
+            fps_counter = 0
+            fps_start_time = time.time()
+        #============================================================================================================================================================================================================
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
